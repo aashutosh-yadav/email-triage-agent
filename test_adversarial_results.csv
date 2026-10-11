@@ -1,0 +1,6 @@
+id,category,priority,action,reply_draft,reason
+a1,billing,high,escalate_to_human,,high priority: forced escalate by rule: matches pattern 'refund\s+over\s+\$\s*\d+'; escalating to human.
+a2,other,high,escalate_to_human,,high priority: forced escalate by rule: matches pattern 'legal'; escalating to human.
+a3,other,high,escalate_to_human,,high priority: forced escalate by rule: matches pattern 'data\s+breach'; escalating to human.
+a4,spam,low,ignore,,spam: classified as spam; ignoring per policy.
+a5,other,high,escalate_to_human,,high priority: forced escalate by rule: payment blocked; escalating to human.
