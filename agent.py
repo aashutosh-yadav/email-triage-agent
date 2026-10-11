@@ -52,13 +52,13 @@ RE_INJECT = re.compile(
     r"|you\s+are\s+now\s+(?:an?\s+)?(?:admin|assistant|ai)"
     r"|i\s+am\s+(?:the\s+|your\s+)?(?:admin|developer)"
     r"|i['\u2019]m\s+(?:the\s+|your\s+)?(?:admin|developer)"
-    r"|mark\s+(?:this|me)\s+as\s+(?:not\s+)?(?:spam|safe)"
+    r"|mark\s+(?:this|me|this\s+email|this\s+message)\s+as\s+(?:not\s+)?(?:spam|safe|reply)"
+    r"|classify\s+(?:me|this|this\s+email)\s+as\s+(?:not\s+)?(?:spam|safe|reply)"
     r")\b",
     re.I,
 )
 
 # Forced escalation signals (high risk -> escalate_to_human).
-RE_REFUND500 = re.compile(r"\brefund\s+(?:over|of|above|for)\s+\$?\s*\d{2,}\b", re.I)
 RE_DISPUTE = re.compile(r"\b(dispute|chargeback|fraudulent\s+charge|unauthorized\s+charge)\b", re.I)
 RE_LEGAL = re.compile(r"\b(legal|lawsuit|attorney|demand\s+letter)\b", re.I)
 RE_BREACH = re.compile(
@@ -82,6 +82,63 @@ RE_OUTAGE = re.compile(
 )
 RE_ANGRY = re.compile(r"\b(angry|furious|outraged|unacceptable)\b", re.I)
 
+# Refund-over-threshold detection: parse dollar amounts near "refund".
+RE_REFUND_CTX = re.compile(r"\brefund\w*\b", re.I)
+RE_MONEY = re.compile(r"(?:\$\s*(\d[\d,]*(?:\.\d+)?)|\b(\d[\d,]*(?:\.\d+)?)\s*(?:dollars|usd)\b)", re.I)
+_WORD_NUM = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
+    "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13,
+    "fourteen": 14, "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18,
+    "nineteen": 19, "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50,
+    "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90,
+    "hundred": 100, "thousand": 1000,
+}
+
+
+def _parse_word_amount(sentence: str) -> float:
+    total = 0.0
+    current = 0.0
+    for w in re.findall(r"[a-z]+", sentence.lower()):
+        v = _WORD_NUM.get(w)
+        if v is None:
+            total += current
+            current = 0.0
+        elif v == 100:
+            current = (current or 1) * 100
+        elif v == 1000:
+            total += (current or 1) * 1000
+            current = 0.0
+        else:
+            current += v
+    return total + current
+
+
+def _sentences(text: str) -> List[str]:
+    return [s for s in re.split(r"(?<=[.!?;])\s+", text) if s.strip()]
+
+
+def refund_over_threshold(text: str, threshold: float = 500.0) -> bool:
+    """True if any sentence mentions 'refund' and an amount >= the threshold."""
+    for sent in _sentences(text):
+        if not RE_REFUND_CTX.search(sent):
+            continue
+        amounts = []
+        for m in RE_MONEY.finditer(sent):
+            raw = (m.group(1) or m.group(2) or "").replace(",", "")
+            try:
+                amounts.append(float(raw))
+            except ValueError:
+                pass
+        w = _parse_word_amount(sent)
+        if w:
+            amounts.append(w)
+        if not amounts:
+            continue
+        over_flag = bool(re.search(r"\b(?:over|above|more\s+than)\b", sent, re.I))
+        if any(a > threshold for a in amounts) or (over_flag and any(a >= threshold for a in amounts)):
+            return True
+    return False
+
 # Category regexes (regex fallback classifier).
 RE_BILLING = re.compile(
     r"\b(charg\w*|bill\w*|invoice|payment|billing|refund|subscription|subscribe|plan\b|credit|debit|price|pricing)\b",
@@ -89,7 +146,12 @@ RE_BILLING = re.compile(
 )
 RE_BUG = re.compile(
     r"\b(crash\w*|error\w*|broken|bug\w*|not\s+working|doesn['\u2019]t\s+work|does\s+not\s+work|glitch|fail\w*"
-    r"|problem\s+with|issue\s+with|slow\b|lag(?:ging)?|freez\w*|ne\s+fonctionne\s+pas|fonctionne\s+pas)\b",
+    r"|problem\s+with|issue\s+with|slow(?:ed|ing|s)?\b|lag(?:ging)?|freez\w*"
+    r"|ne\s+fonctionne\s+(?:pas|plus)|fonctionne\s+(?:pas|plus)|ca\s+marche\s+pas"
+    r"|(?:app|site|website|platform|service)\s+(?:is|are|was)\s+down|down\s+for\s+everyone"
+    r"|(?:50[0348])\s+error|internal\s+server\s+error|outage|won['\u2019]t\s+load"
+    r"|data\s+loss|(?:data|files?|records?)\s+(?:was|were)\s+(?:lost|wiped)"
+    r"|lost\s+(?:all\s+)?my\s+(?:data|files?))\b",
     re.I,
 )
 RE_FEAT = re.compile(
@@ -97,14 +159,25 @@ RE_FEAT = re.compile(
     r"|can\s+we\s+(?:have|get)|would\s+be\s+(?:great|nice)\s+to\s+have|would\s+love)\b",
     re.I,
 )
-RE_THANKS = re.compile(r"\b(thanks|thank\s+you|thx|appreciate\s+it|great\s+job)\b", re.I)
-RE_NONACTION = re.compile(r"\b(no\s+action\s+needed|no\s+reply\s+needed|just\s+fyi|fyi\b|for\s+your\s+information|noted)\b", re.I)
+RE_THANKS = re.compile(r"\b(thanks|thank\s+you|thx|appreciate\s+it|great\s+job|gracias|merci|danke)\b", re.I)
+RE_QUESTION = re.compile(
+    r"\b(how\s+do\s+i|how\s+can\s+i|what\s+is|can\s+you|could\s+you|would\s+you|is\s+it\s+possible"
+    r"|question|pregunt\w+|qui\s?estion|frage|ask(?:ing)?\s+(?:you|about))\b|\?",
+    re.I,
+)
+RE_NONACTION = re.compile(
+    r"\b(no\s+action\s+needed|no\s+reply\s+needed|just\s+fyi|fyi\b|for\s+your\s+information|noted"
+    r"|roundup|newsletter|weekly\s+(?:update|roundup)|won\s+a\s+prize|giveaway|product\s+tips"
+    r"|auto-?generated|heads\s+up)\b",
+    re.I,
+)
 
 # Blocking bugs (no workaround) -> escalate; otherwise bug_with_workaround -> reply.
 RE_BLOCKING_BUG = re.compile(
     r"\b(crash\w*|won['\u2019]t\s+(open|start|load|launch|work|cancel)|cannot\s+log\s+in|can['\u2019]t\s+log\s+in"
-    r"|black\s+screen|frozen|freez\w*|completely\s+(broken|blocked|unusable)|data\s+loss|locked\s+out"
-    r"|unable\s+to\s+(open|access|use)|impossible\s+to\s+(use|open)|lost\s+my\s+data)\b",
+    r"|black\s+screen|ecran\s+noir|frozen|freez\w*|completely\s+(broken|blocked|unusable)|data\s+loss|locked\s+out"
+    r"|unable\s+to\s+(open|access|use)|impossible\s+to\s+(use|open)|lost\s+my\s+data|rien\s+faire|no\s+puedo"
+    r"|(?:data|files?|records?|projects?)\s+(?:was|were|is|are)\s+(?:lost|wiped))",
     re.I,
 )
 
@@ -201,31 +274,37 @@ def detect_injection(text: str) -> Tuple[bool, str]:
     return False, ""
 
 
-def should_force_escalate(subject: str, body: str) -> Tuple[bool, str]:
-    """High-risk signals -> (True, reason). RUNS BEFORE the spam shortcut."""
+def should_force_escalate_detail(subject: str, body: str) -> Tuple[bool, str, str]:
+    """High-risk signals -> (True, reason, priority). RUNS BEFORE the spam shortcut."""
     t = f"{subject} {body}"
     inj, inj_reason = detect_injection(t)
     if inj:
-        return True, inj_reason
-    if RE_REFUND500.search(t):
-        return True, "refund amount over threshold; refunds are never auto-approved"
+        return True, inj_reason, "high"
+    if refund_over_threshold(t):
+        return True, "refund amount over threshold; refunds are never auto-approved", "medium"
     if RE_DISPUTE.search(t):
-        return True, "chargeback/dispute; escalates to human per policy"
+        return True, "chargeback/dispute; escalates to human per policy", "high"
     if RE_LEGAL.search(t):
-        return True, "legal content; escalates to human per policy"
+        return True, "legal content; escalates to human per policy", "high"
     if RE_BREACH.search(t):
-        return True, "security breach/compromise; escalates to human"
+        return True, "security breach/compromise; escalates to human", "high"
     if RE_LEAK.search(t):
-        return True, "data leak; escalates to human"
+        return True, "data leak; escalates to human", "high"
     if RE_SSN.search(t):
-        return True, "sensitive data (ssn) mentioned; escalates to human"
+        return True, "sensitive data (ssn) mentioned; escalates to human", "high"
     if RE_PAYBLOCK.search(t):
-        return True, "payment blocked/cannot pay; high priority per policy"
+        return True, "payment blocked/cannot pay; high priority per policy", "high"
     if RE_OUTAGE.search(t):
-        return True, "outage: app/site/service is down; high priority per policy"
+        return True, "outage: app/site/service is down; high priority per policy", "high"
     if RE_ANGRY.search(t):
-        return True, "angry customer; escalates to human per policy"
-    return False, ""
+        return True, "angry customer; escalates to human per policy", "medium"
+    return False, "", ""
+
+
+def should_force_escalate(subject: str, body: str) -> Tuple[bool, str]:
+    """Public 2-tuple API: (escalate?, reason)."""
+    forced, reason, _ = should_force_escalate_detail(subject, body)
+    return forced, reason
 
 
 def is_blocking_bug(text: str) -> bool:
@@ -255,16 +334,17 @@ def decide(email: Email, cat: str) -> Triage:
 
     # 1) Forced escalation runs BEFORE the spam shortcut (policy: high-risk
     #    signals cannot be hidden behind a spam label).
-    forced, freason = should_force_escalate(subj, body)
+    forced, freason, fprio = should_force_escalate_detail(subj, body)
     if forced:
         c = cat if cat in CATEGORIES else "other"
+        prio_prefix = "high priority" if fprio == "high" else "medium priority"
         return Triage(
             id=email.id,
             category=c,
-            priority="high",
+            priority=fprio,
             action="escalate_to_human",
             reply_draft="",
-            reason=f"high priority: {freason}; escalating to human.",
+            reason=f"{prio_prefix}: {freason}; escalating to human.",
         )
     if t.strip() == "":
         return Triage(
@@ -319,6 +399,15 @@ def decide(email: Email, cat: str) -> Triage:
             action="reply",
             reply_draft="Thanks for the suggestion. We've logged it for the product team and will reach out if we need more detail. — The Support Team",
             reason="feature request; replying with acknowledgement.",
+        )
+    if RE_QUESTION.search(t):
+        return Triage(
+            id=email.id,
+            category="other",
+            priority="low",
+            action="reply",
+            reply_draft="Thanks for reaching out. We'll get back to you shortly. — The Support Team",
+            reason="general inquiry; acknowledging.",
         )
     if RE_THANKS.search(t) or RE_NONACTION.search(t):
         return Triage(
