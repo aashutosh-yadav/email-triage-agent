@@ -1,6 +1,6 @@
 id,category,priority,action,reply_draft,reason
 e001,billing,medium,reply,Thanks for flagging the issue. We'll review it and get back shortly. — The Support Team,billing issue detected; actionable request -> reply.
-e002,bug_report,high,escalate_to_human,,functional bug likely blocking use; escalating to human.
+e002,other,low,reply,Thanks for reaching out. We'll get back to you shortly. — The Support Team,general inquiry; acknowledging.
 e003,spam,low,ignore,,spam: classified as spam; ignoring per policy.
 e004,feature_request,low,reply,Thanks for the suggestion. We've logged it for the product team. — The Support Team,feature request; reply with acknowledgement.
 e005,other,low,ignore,,non-actionable thanks; ignoring.
