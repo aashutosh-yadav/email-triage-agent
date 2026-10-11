@@ -1,6 +1,6 @@
 id,category,priority,action,reply_draft,reason
-e001,billing,medium,reply,Thanks for flagging the issue. We'll review it and get back shortly. — The Support Team,billing issue detected; actionable request -> reply.
-e002,bug_report,high,escalate_to_human,,functional bug likely blocking use; escalating to human.
-e003,spam,low,ignore,,spam: classified as spam; ignoring per policy.
-e004,feature_request,low,reply,Thanks for the suggestion. We've logged it for the product team. — The Support Team,feature request; reply with acknowledgement.
-e005,other,low,ignore,,non-actionable thanks; ignoring.
+e001,billing,medium,reply,Thanks for flagging this. We're reviewing your account and will confirm the next step shortly. Could you share the invoice or charge date from your statement? — The Support Team,billing issue with an actionable request; replying.
+e002,bug_report,high,escalate_to_human,,high priority: functional bug blocking use; escalating to human.
+e003,spam,low,ignore,,spam: multiple spam signals; ignoring per policy.
+e004,feature_request,low,reply,Thanks for the suggestion. We've logged it for the product team and will reach out if we need more detail. — The Support Team,feature request; replying with acknowledgement.
+e005,other,low,ignore,,non-actionable message; ignoring.
