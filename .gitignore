@@ -1,0 +1,19 @@
+# secrets
+rest
+*.env
+.env*
+
+# opencode
+# Track challenge skills; ignore other local opencode artifacts.
+.opencode/*
+!.opencode/skills/
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# outputs
+out/
+*.log
