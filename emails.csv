@@ -1,0 +1,6 @@
+id,sender,subject,body
+e001,billing@acme.com,Double charge on invoice,I see two charges on my last invoice this month.
+e002,bugs@client.io,App crashes on login,The app keeps crashing when I try to log in since the latest update.
+e003,pitch@spam.biz,Get rich quick!,Earn $10000 working from home now! Click this link!
+e004,alice@startup.com,Slack integration,Would it be possible to add a Slack integration for notifications?
+e005,support@user.co,Thanks for the help,Just wanted to say thanks for fixing my issue quickly.
