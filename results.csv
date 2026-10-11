@@ -3,4 +3,4 @@ e001,billing,medium,reply,Thanks for flagging this. We're reviewing your account
 e002,bug_report,high,escalate_to_human,,high priority: functional bug blocking use; escalating to human.
 e003,spam,low,ignore,,spam: multiple spam signals; ignoring per policy.
 e004,feature_request,low,reply,Thanks for the suggestion. We've logged it for the product team and will reach out if we need more detail. — The Support Team,feature request; replying with acknowledgement.
-e005,other,low,ignore,,non-actionable message; ignoring.
+e005,other,low,ignore,,non-actionable message (thanks/appreciation); ignoring.

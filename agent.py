@@ -37,13 +37,16 @@ RE_SPAM_SIGNAL = re.compile(
 
 # --------------------------------------------------------------------------
 # Prompt injection (email content must never steer the pipeline).
+# A "hardsign" token (previous/your/above/system/...) must follow the verb, so
+# benign talk like "disregard the earlier instructions I sent" does not fire,
+# while canonical attacks ("ignore previous/your instructions") still do.
 # --------------------------------------------------------------------------
 RE_INJECT = re.compile(
     r"\b(?:"
-    r"(?:ignore|disregard|forget|overrule|override)\s+(?:all\s+|any\s+|the\s+|your\s+|my\s+|earlier\s+|above\s+)*"
-    r"(?:previous\s+|prior\s+|earlier\s+|above\s+)*"
-    r"(?:instructions?|rules?|prompts?|guidelines?|directives?|everything\s+above|all\s+context)"
-    r"|ignore\s+(?:all\s+)?the\s+above"
+    r"(?:ignore|disregard|forget|overrule|override)\s+(?:all\s+|any\s+|the\s+|my\s+)*"
+    r"(?:your\s+|previous\s+|prior\s+|above\s+|system\s+|developer\s+)"
+    r"(?:instructions?|rules?|prompts?|guidelines?)"
+    r"|ignore\s+(?:all\s+|any\s+|the\s+)?(?:above|previous|prior)\s+(?:text|content|instructions?)"
     r"|(?:system|developer)\s+prompt"
     r"|reveal\s+(?:your\s+|the\s+)?(?:system\s+)?prompt"
     r"|print\s+(?:your|the)\s+instructions"
@@ -82,7 +85,7 @@ RE_OUTAGE = re.compile(
 )
 RE_ANGRY = re.compile(r"\b(angry|furious|outraged|unacceptable)\b", re.I)
 
-# Refund-over-threshold detection: parse dollar amounts near "refund".
+# Refund-over-threshold detection: parse only the amount attached to "refund".
 RE_REFUND_CTX = re.compile(r"\brefund\w*\b", re.I)
 RE_MONEY = re.compile(r"(?:\$\s*(\d[\d,]*(?:\.\d+)?)|\b(\d[\d,]*(?:\.\d+)?)\s*(?:dollars|usd)\b)", re.I)
 _WORD_NUM = {
@@ -93,17 +96,23 @@ _WORD_NUM = {
     "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90,
     "hundred": 100, "thousand": 1000,
 }
+_NUM_RUN = re.compile(
+    r"(?:" + "|".join(sorted(_WORD_NUM, key=len, reverse=True)) + r")"
+    r"(?:\s+(?:and\s+)?" + "(?:" + "|".join(sorted(_WORD_NUM, key=len, reverse=True)) + r"))*"
+    r"\s*(?:dollars|usd)\b",
+    re.I,
+)
 
 
-def _parse_word_amount(sentence: str) -> float:
+def _parse_word_run(span: str) -> float:
+    """Value of a number-word span such as 'five hundred dollars' (500.0)."""
     total = 0.0
     current = 0.0
-    for w in re.findall(r"[a-z]+", sentence.lower()):
+    for w in re.findall(r"[a-z]+", span.lower()):
         v = _WORD_NUM.get(w)
         if v is None:
-            total += current
-            current = 0.0
-        elif v == 100:
+            continue
+        if v == 100:
             current = (current or 1) * 100
         elif v == 1000:
             total += (current or 1) * 1000
@@ -113,40 +122,64 @@ def _parse_word_amount(sentence: str) -> float:
     return total + current
 
 
+def _amount_spans(text: str) -> List[Tuple[float, int]]:
+    """Every money figure as (value, start_index)."""
+    spans: List[Tuple[float, int]] = []
+    for m in RE_MONEY.finditer(text):
+        raw = (m.group(1) or m.group(2) or "").replace(",", "")
+        try:
+            spans.append((float(raw), m.start()))
+        except ValueError:
+            pass
+    for m in _NUM_RUN.finditer(text):
+        spans.append((_parse_word_run(m.group(0)), m.start()))
+    return spans
+
+
 def _sentences(text: str) -> List[str]:
     return [s for s in re.split(r"(?<=[.!?;])\s+", text) if s.strip()]
 
 
 def refund_over_threshold(text: str, threshold: float = 500.0) -> bool:
-    """True if any sentence mentions 'refund' and an amount >= the threshold."""
+    """True if a refund mention has an attached amount >= the threshold.
+
+    Only the amount NEAREST to the word "refund" counts, so "please refund the
+    $10 overcharge from my $600 invoice" is a $10 refund (no escalation), not a
+    $600 one. "refund over/above $X" escalates at >= the threshold.
+    """
     for sent in _sentences(text):
         if not RE_REFUND_CTX.search(sent):
             continue
-        amounts = []
-        for m in RE_MONEY.finditer(sent):
-            raw = (m.group(1) or m.group(2) or "").replace(",", "")
-            try:
-                amounts.append(float(raw))
-            except ValueError:
-                pass
-        w = _parse_word_amount(sent)
-        if w:
-            amounts.append(w)
-        if not amounts:
+        spans = _amount_spans(sent)
+        if not spans:
             continue
+        considered = [
+            min(spans, key=lambda sp: abs(sp[1] - rmatch.start()))[0]
+            for rmatch in RE_REFUND_CTX.finditer(sent)
+        ]
         over_flag = bool(re.search(r"\b(?:over|above|more\s+than)\b", sent, re.I))
-        if any(a > threshold for a in amounts) or (over_flag and any(a >= threshold for a in amounts)):
+        if any(a > threshold for a in considered) or (
+            over_flag and any(a >= threshold for a in considered)
+        ):
             return True
     return False
 
 # Category regexes (regex fallback classifier).
 RE_BILLING = re.compile(
-    r"\b(charg\w*|bill\w*|invoice|payment|billing|refund|subscription|subscribe|plan\b|credit|debit|price|pricing)\b",
+    r"\b(charg\w*|bill\w*|invoice|payment|billing|refund|subscription|subscribe|credit|debit|price|pricing"
+    r"|(?:pro|basic|premium|enterprise|annual|monthly|family|team|business)\s+plan"
+    r"|plan\s+(?:price|cost|fee|changes?)"
+    r"|(?:upgrade|downgrade|cancel|change)\s+(?:my\s+|the\s+)?plan)\b",
     re.I,
 )
 RE_BUG = re.compile(
-    r"\b(crash\w*|error\w*|broken|bug\w*|not\s+working|doesn['\u2019]t\s+work|does\s+not\s+work|glitch|fail\w*"
-    r"|problem\s+with|issue\s+with|slow(?:ed|ing|s)?\b|lag(?:ging)?|freez\w*"
+    r"\b(crash\w*|error\w*|broken|bug\w*|not\s+working|not\s+responding|doesn['\u2019]t\s+work|does\s+not\s+work"
+    r"|does\s+nothing|glitch|freez\w*"
+    r"|fail(?:s|ed|ing|ure)?\s+to\s+(?:launch|load|open|start|run|work|log\s+in)"
+    r"|(?:problem|issue)\s+with\s+(?:the\s+)?(?:app|application|login|loading|sync|export(?:ing)?|payments?|billing|invoice|feature|dashboard|notifications?)"
+    r"|(?:app|application|site|website|platform|service|feature|dashboard|loading)\s+(?:is|are|has|got)\s+(?:gotten\s+|been\s+)?slow(?:ly|er)?"
+    r"|perf\w*\s+(?:has|have)?\s*slowed|slowed\s+down|slow(?:ly)?\s+to\s+(?:load|respond|open)"
+    r"|(?:app|application|loading|sync|export|video|network|streaming)\s+lag(?:ging)?|lag(?:ging)?\s+in\s+(?:loading|sync|export)"
     r"|ne\s+fonctionne\s+(?:pas|plus)|fonctionne\s+(?:pas|plus)|ca\s+marche\s+pas"
     r"|(?:app|site|website|platform|service)\s+(?:is|are|was)\s+down|down\s+for\s+everyone"
     r"|(?:50[0348])\s+error|internal\s+server\s+error|outage|won['\u2019]t\s+load"
@@ -159,7 +192,7 @@ RE_FEAT = re.compile(
     r"|can\s+we\s+(?:have|get)|would\s+be\s+(?:great|nice)\s+to\s+have|would\s+love)\b",
     re.I,
 )
-RE_THANKS = re.compile(r"\b(thanks|thank\s+you|thx|appreciate\s+it|great\s+job|gracias|merci|danke)\b", re.I)
+RE_THANKS = re.compile(r"\b(thanks|thank\s+you|thx|appreciate\s+it|great\s+job|well\s+done|gracias|merci|danke)\b", re.I)
 RE_QUESTION = re.compile(
     r"\b(how\s+do\s+i|how\s+can\s+i|what\s+is|can\s+you|could\s+you|would\s+you|is\s+it\s+possible"
     r"|question|pregunt\w+|qui\s?estion|frage|ask(?:ing)?\s+(?:you|about))\b|\?",
@@ -168,7 +201,9 @@ RE_QUESTION = re.compile(
 RE_NONACTION = re.compile(
     r"\b(no\s+action\s+needed|no\s+reply\s+needed|just\s+fyi|fyi\b|for\s+your\s+information|noted"
     r"|roundup|newsletter|weekly\s+(?:update|roundup)|won\s+a\s+prize|giveaway|product\s+tips"
-    r"|auto-?generated|heads\s+up)\b",
+    r"|heads\s+up|out\s+of\s+office"
+    r"|automat(?:ic|ed)\s+(?:reply|response|notification|email|message)|this\s+is\s+an\s+automated"
+    r"|do\s+not\s+reply|auto-?reply)\b",
     re.I,
 )
 
@@ -400,6 +435,15 @@ def decide(email: Email, cat: str) -> Triage:
             reply_draft="Thanks for the suggestion. We've logged it for the product team and will reach out if we need more detail. — The Support Team",
             reason="feature request; replying with acknowledgement.",
         )
+    if RE_NONACTION.search(t):
+        return Triage(
+            id=email.id,
+            category="other",
+            priority="low",
+            action="ignore",
+            reply_draft="",
+            reason="non-actionable message (notification/auto-reply/OoO); ignoring.",
+        )
     if RE_QUESTION.search(t):
         return Triage(
             id=email.id,
@@ -409,14 +453,14 @@ def decide(email: Email, cat: str) -> Triage:
             reply_draft="Thanks for reaching out. We'll get back to you shortly. — The Support Team",
             reason="general inquiry; acknowledging.",
         )
-    if RE_THANKS.search(t) or RE_NONACTION.search(t):
+    if RE_THANKS.search(t):
         return Triage(
             id=email.id,
             category="other",
             priority="low",
             action="ignore",
             reply_draft="",
-            reason="non-actionable message; ignoring.",
+            reason="non-actionable message (thanks/appreciation); ignoring.",
         )
     return Triage(
         id=email.id,
@@ -520,8 +564,10 @@ def main() -> None:
             t, info = triage_email(e, use_llm=client is not None, client=client)
             out.append(t)
             log_rows.append(info)
-        write_results(args.output, out)
         write_log(args.log, log_rows)
+        # results.csv is written LAST so a failed decision-log write cannot
+        # leave a valid-looking output file behind.
+        write_results(args.output, out)
         counts = {s: sum(1 for r in log_rows if r.get("source") == s) for s in ("llm", "fallback")}
         print(f"Wrote {len(out)} rows to {args.output} (llm={counts['llm']}, fallback={counts['fallback']})", file=sys.stderr)
     except Exception as exc:

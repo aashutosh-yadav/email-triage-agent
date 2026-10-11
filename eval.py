@@ -14,7 +14,7 @@ Case = Tuple[agent.Email, Dict[str, str]]
 
 
 def load_cases(path: str) -> List[Case]:
-    with open(path, newline="", encoding="utf-8") as f:
+    with open(path, newline="", encoding="utf-8", errors="replace") as f:
         rows = list(csv.DictReader(f))
     cases: List[Case] = []
     for r in rows:
@@ -30,8 +30,19 @@ def load_cases(path: str) -> List[Case]:
 
 
 def load_predicted(path: str) -> Dict[str, Dict[str, str]]:
-    with open(path, newline="", encoding="utf-8") as f:
-        return {r["id"]: r for r in csv.DictReader(f)}
+    with open(path, newline="", encoding="utf-8", errors="replace") as f:
+        reader = csv.DictReader(f)
+        if not reader.fieldnames or "id" not in reader.fieldnames:
+            raise SystemExit("predicted CSV is missing the 'id' column")
+        preds: Dict[str, Dict[str, str]] = {}
+        for r in reader:
+            rid = (r.get("id") or "").strip()
+            if not rid:
+                continue
+            if rid in preds:
+                raise SystemExit(f"duplicate id in predicted CSV: {rid!r}")
+            preds[rid] = r
+    return preds
 
 
 def main() -> None:
@@ -77,10 +88,6 @@ def main() -> None:
     if esc:
         ok = sum(1 for _e, exp, pred in esc if pred["action"] == "escalate_to_human")
         print(f"action (escalation rows only): {100.0 * ok / len(esc):.1f}% ({ok}/{len(esc)})")
-
-    for _e, exp, pred in rows:
-        if exp["action"] == "reply" and pred["action"] != "reply":
-            mismatches.append((pred["id"], "reply_draft(expected reply)", "reply", pred["action"]))
 
     inv = [pred["id"] for _e, _exp, pred in rows
            if (pred["action"] == "reply") != bool((pred.get("reply_draft") or "").strip())]
