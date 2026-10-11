@@ -2,11 +2,18 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
+
+try:
+    from agent_llm import GrogError, GroqClient
+except Exception:  # pragma: no cover — keep the batch runnable even if LLM dep breaks
+    GrogError = RuntimeError
+    GroqClient = None  # type: ignore[assignment]
 
 CATEGORIES = {"billing", "bug_report", "feature_request", "spam", "other"}
 PRIORITIES = {"high", "medium", "low"}
@@ -162,6 +169,15 @@ def write_results(path: str | Path, results: Iterable[Triage]) -> None:
                     "reason": r.reason,
                 }
             )
+
+
+def write_log(path: str | Path, rows: Iterable[Dict]) -> None:
+    """Append-only decision trail: which classifier produced each row."""
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with p.open("a", encoding="utf-8") as f:
+        for r in rows:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
 
 # --------------------------------------------------------------------------
@@ -340,42 +356,85 @@ def validate_triage(t: Triage) -> None:
 # --------------------------------------------------------------------------
 # Pipeline
 # --------------------------------------------------------------------------
-def classify_email(email: Email) -> str:
-    """Current deterministic classifier (LLM wiring lands in Step B)."""
-    return classify_regex(email)
+def classify_email(
+    email: Email,
+    use_llm: bool = False,
+    client: Optional[GroqClient] = None,
+) -> Tuple[str, str, str, Optional[str]]:
+    """Classify one email.
+
+    Returns (category, source, rationale, raw_llm_content) where source is
+    'llm' when the Groq model produced a valid category, else 'fallback' (regex).
+    The batch never crashes: any LLM failure falls back to the regex classifier.
+    """
+    if use_llm and client is not None:
+        try:
+            cat, rationale, raw = client.propose_category(email)
+            if cat in CATEGORIES:
+                return cat, "llm", rationale, (raw or "")[:500]
+        except Exception:
+            pass  # retry is handled inside the client; any residual failure -> fallback
+    return classify_regex(email), "fallback", "", None
 
 
-def triage_email(email: Email) -> Triage:
-    cat = classify_email(email)
-    t = decide(email, cat)
-    validate_triage(t)
-    return t
+def triage_email(
+    email: Email,
+    use_llm: bool = False,
+    client: Optional[GroqClient] = None,
+) -> Tuple[Triage, Dict]:
+    """Triage one email; never raises for row-level issues."""
+    cat, source, rationale, raw = classify_email(email, use_llm=use_llm, client=client)
+    try:
+        t = decide(email, cat)
+        validate_triage(t)
+        return t, {"id": email.id, "source": source, "category": t.category,
+                   "priority": t.priority, "action": t.action, "reason": t.reason,
+                   "rationale": rationale, "raw_llm": raw}
+    except Exception as exc:
+        t = Triage(
+            id=email.id,
+            category="other",
+            priority="high",
+            action="escalate_to_human",
+            reply_draft="",
+            reason="failed to triage; escalating to human.",
+        )
+        return t, {"id": email.id, "source": source, "category": t.category,
+                   "priority": t.priority, "action": t.action, "reason": t.reason,
+                   "rationale": rationale, "raw_llm": raw, "error": str(exc)}
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="triage")
     parser.add_argument("--input", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--log", default="out/decision_log.jsonl",
+                        help="decision trail (append-only); default out/decision_log.jsonl")
+    parser.add_argument("--no-llm", action="store_true",
+                        help="deterministic run: use the regex classifier only")
     args = parser.parse_args()
+
+    use_llm = (not args.no_llm) and GroqClient is not None
+    client: Optional[GroqClient] = None
+    if use_llm:
+        try:
+            client = GroqClient()
+        except Exception as exc:
+            print(f"warning: could not init LLM client ({exc}); using regex only", file=sys.stderr)
+            client = None
+
     try:
         emails = read_emails(args.input)
         out: List[Triage] = []
+        log_rows: List[Dict] = []
         for e in emails:
-            try:
-                out.append(triage_email(e))
-            except Exception:
-                out.append(
-                    Triage(
-                        id=e.id,
-                        category="other",
-                        priority="high",
-                        action="escalate_to_human",
-                        reply_draft="",
-                        reason="failed to triage; escalating to human.",
-                    )
-                )
+            t, info = triage_email(e, use_llm=client is not None, client=client)
+            out.append(t)
+            log_rows.append(info)
         write_results(args.output, out)
-        print(f"Wrote {len(out)} rows to {args.output}", file=sys.stderr)
+        write_log(args.log, log_rows)
+        counts = {s: sum(1 for r in log_rows if r.get("source") == s) for s in ("llm", "fallback")}
+        print(f"Wrote {len(out)} rows to {args.output} (llm={counts['llm']}, fallback={counts['fallback']})", file=sys.stderr)
     except Exception as exc:
         print(f"error: {exc}", file=sys.stderr)
         sys.exit(1)
