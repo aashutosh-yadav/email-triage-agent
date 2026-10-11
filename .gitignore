@@ -2,6 +2,7 @@
 rest
 *.env
 .env*
+!.env.example
 
 # opencode
 # Track challenge skills; ignore other local opencode artifacts.
@@ -17,3 +18,4 @@ venv/
 # outputs
 out/
 *.log
+*.zip
