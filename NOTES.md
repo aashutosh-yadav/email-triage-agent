@@ -4,7 +4,7 @@
 - done: escalation-before-spam; spam needs >=2 signals ("earnings" removed); injection regex; outage ("app/site is down"); refund/dispute/legal/security/angry -> escalate; bug-with-workaround -> medium/reply. Rule asserts pass; runs clean on emails.csv + test_adversarial.csv.
 
 ## Step B — LLM wiring (done, commit 0cfffb9)
-- done: GroqClient pydantic CategoryProposal (Literal), temperature 0, delimited <email> untrusted-data prompt, retry once w/ typed GrogError; agent.py falls back to regex on any LLM failure; --no-llm; decision log (out/decision_log.jsonl) records source llm|fallback per row; mock-verified retry+fallback.
+- done: GroqClient pydantic CategoryProposal (Literal), temperature 0, delimited <email> untrusted-data prompt, retry once w/ typed GroqError; agent.py falls back to regex on any LLM failure; --no-llm; decision log (out/decision_log.jsonl) records source llm|fallback per row; mock-verified retry+fallback.
 
 ## Step C — single entry point (done, commit edd89a1)
 - done: deleted stale agent/ package; `import agent` resolves to agent.py; runs clean.
