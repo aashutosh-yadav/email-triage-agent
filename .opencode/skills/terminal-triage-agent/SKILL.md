@@ -64,7 +64,7 @@ nondeterminism.
 
 ## Done when
 
-- `python -m agent --input emails.csv --output results.csv` runs clean.
+- `python3 agent.py --input emails.csv --output results.csv` runs clean.
 - Every output row passes enum + `reply_draft` validation.
 - Eval script reports per-field accuracy and is reproducible.
 - README explains the design and tradeoffs in under a page.

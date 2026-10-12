@@ -1,7 +1,9 @@
 # Agent Skills
 
-This project uses the `addyosmani/agent-skills` pack, loaded from
-`~/agent-skills/skills` via the `skills` config in `opencode.jsonc`.
+This project's challenge-specific skills live in `.opencode/skills/` and are
+loaded via the `skills` config in `opencode.jsonc`. The generic
+`addyosmani/agent-skills` pack is optional: if you have it installed locally,
+add its path (e.g. `~/agent-skills/skills`) to the `skills` array.
 
 ## Core rules
 

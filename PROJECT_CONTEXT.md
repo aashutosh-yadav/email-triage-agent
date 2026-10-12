@@ -14,7 +14,7 @@ Build a command-line **"terminal agent"** for the Smart Email Triage challenge:
 read a batch of customer emails and write one triage row per email
 (`category`, `priority`, `action`, `reply_draft`, `reason`).
 
-**Success looks like:** `python -m agent --input emails.csv --output results.csv`
+**Success looks like:** `python3 agent.py --input emails.csv --output results.csv`
 runs clean, every output row passes enum + `reply_draft` validation, an eval
 script reports per-field accuracy, and a short README explains the design.
 
@@ -65,17 +65,18 @@ read emails.csv
 | Path | Purpose |
 | ---- | ------- |
 | `AGENTS.md` | Agent rules + intent→skill mapping (always loaded) |
-| `opencode.jsonc` | Loads external skills from `~/agent-skills/skills` |
+| `opencode.jsonc` | Loads project-local skills from `.opencode/skills` (portable; external pack optional) |
 | `PROJECT_CONTEXT.md` | This file — durable map + session handoff |
 | `.gitignore` | Ignores secrets/`.env*`, `.opencode/*` (except skills), `__pycache__/`, `out/`, `*.log`, `*.zip` |
 | `.opencode/skills/email-triage-policy/` | Decision rules (taxonomy, priority/action, reply) |
 | `.opencode/skills/terminal-triage-agent/` | Build workflow for the agent |
 | `agent.py` | **Single entry point**: I/O, rule layer (regexes + decision table), pydantic-validated LLM wiring, validation, CLI |
-| `agent_llm.py` | Groq wrapper: delimited untrusted-data prompt, temp 0, `CategoryProposal` pydantic model, retry-once, typed `GrogError` |
-| `eval.py` | Scores predictions vs `eval_cases.csv` labels; prints per-field + escalation-row accuracy and every mismatch |
-| `eval_cases.csv` | 36 labeled emails (normal / injection / non-English / empty / long / ambiguous / spam-bait) |
-| `test_rules.py` | 25 stdlib `unittest` rule-layer tests |
-| `test_llm.py` | 11 stdlib `unittest` LLM wiring tests (retry/fallback/validation, mocked HTTP) |
+| `agent_llm.py` | Groq wrapper: delimited untrusted-data prompt, temp 0, `CategoryProposal` pydantic model, retry-once, typed `GroqError`; default model `openai/gpt-oss-20b` |
+| `eval.py` | Scores predictions vs a labeled CSV (`--cases`); prints per-field + escalation-row accuracy and every mismatch |
+| `eval_cases.csv` | 36 **tuned** labeled emails (normal / injection / non-English / empty / long / ambiguous / spam-bait) |
+| `heldout_cases*.csv` | Held-out sets (26/20/16 rows), authored from the policy — **measure, do not tune** |
+| `test_rules.py` | 39 stdlib `unittest` rule-layer tests |
+| `test_llm.py` | 14 stdlib `unittest` LLM wiring tests (retry/fallback/validation, mocked HTTP) |
 | `emails.csv` / `results.csv` | Sample input / regenerated output |
 | `requirements.txt` | `pydantic`, `requests` (only) |
 | `.env.example` | `GROQ_API_KEY`, `GROQ_MODEL` |
@@ -98,33 +99,42 @@ shadowed `agent.py` on `import agent` and duplicated the entry point.
 - **2026-10-12** — Single entry point: deleted the `agent/` package; `agent.py`
   owns everything. Decision trail goes to an append-only JSON log
   (`--log`, default `out/decision_log.jsonl`), **not** into `results.csv`.
+- **2026-10-12** — LLM `spam` is **distrusted unless the regex detector agrees**
+  (else fall back to the regex category, logged as `llm_spam_rejected`); the CLI
+  warns explicitly when the LLM is unavailable. Groq default model moved to
+  `openai/gpt-oss-20b` after `llama-3.1-8b-instant` was retired 2026-08-16.
+- **2026-10-12** — Kept a **held-out** eval set (authored from the policy, never
+  tuned) to measure generalization honestly; `heldout_cases*.csv`. The tuned
+  `eval_cases.csv` 100% is expected to be optimistic.
 
 ---
 
 ## Status / handoff  ← update this section every session
 
-- **State:** the agent is **fully built and green**. `python agent.py`
-  (LLM-first) + `python agent.py --no-llm` (deterministic) both run clean; eval
-  scores **category 100% / priority 100% / action 100% / action-on-escalation
-  100%** on `eval_cases.csv` (36 rows); 36/36 tests pass
-  (`python3 -m unittest discover -s . -p 'test_*.py'`).
+- **State:** the agent is **fully built and green**. `python3 agent.py`
+  (LLM-first) + `python3 agent.py --no-llm` (deterministic) both run clean; the
+  tuned eval scores **category 100% / priority 100% / action 100% /
+  action-on-escalation 100%** on `eval_cases.csv` (36 rows); 53/53 tests pass
+  (`python3 -m unittest discover -s . -p 'test_*.py'`). Held-out sets measure
+  **#1 73.1/96.2/88.5**, **#2 80/85/85**, **#3 100/100/100**.
 - **Repo:** branch `master`, remote `origin`
   (`github.com/aashutosh-yadav/email-triage-agent.git`). Recent commits:
-  `023f123` (eval+tests 100%), `edd89a1` (delete agent/ package),
-  `0cfffb9` (LLM wiring), `785aa78` (rule hardening).
-- **Done:** rule hardening (escalation-before-spam, injection + outage detection,
-  numbers-based refund threshold, spam ≥2 signals); Groq LLM wiring (pydantic
-  validation, retry once, temp 0, delimited prompt, regex fallback,
-  `--no-llm`, decision log); single entry point; `eval_cases.csv` +
-  `test_rules.py` + `test_llm.py`; eval.py; README; `.env.example`;
-  `requirements.txt` trimmed to `pydantic`, `requests`; `.gitignore` + `*.zip`.
-- **Next:** none required. Optional follow-ups: live Groq smoke test with a real
-  key, more `eval_cases.csv` coverage (refund word-forms, disambiguation), and
-  re-running everything on a fresh clone.
+  `c1a2178` (Step F/final), `32a271d` (review fixes), `023f123` (eval+tests),
+  `edd89a1` (delete agent/ package), `0cfffb9` (LLM wiring), `785aa78`
+  (rule hardening).
+- **Done:** rule hardening (escalation-before-spam, injection + outage,
+  numbers-based refund threshold, spam ≥2 signals); model spam distrusted
+  unless regex agrees; explicit LLM-unavailable warnings; Groq LLM wiring
+  (pydantic, retry once, temp 0, delimited prompt, regex fallback, `--no-llm`,
+  decision log); single entry point; tuned + held-out eval sets; tests; README;
+  `.env.example` (default `openai/gpt-oss-20b`); `requirements.txt` trimmed.
+- **Next:** none required. Optional: live Groq smoke test with a real key
+  (`python3 eval.py --llm`), re-run on a fresh clone, broaden non-English spam/bug
+  coverage.
 - **Known issues:** real Groq call never exercised here (no `GROQ_API_KEY` in
-  this env — mock-tested instead); refund word-form parsing is heuristic.
-- **Working tree:** should be clean after the Step-E cleanup commit (the stale
-  tracked `email-triage-*.zip` files were deleted from the working tree).
+  this env — mock-tested instead); non-English coverage beyond French is partial;
+  single-signal spam intentionally falls through (documented in README).
+- **Working tree:** should be clean after the latest commit.
 
 *New session: before acting, read `AGENTS.md`, this status section, and run
 `git status` to confirm the actual working-tree state. Re-run verification if
@@ -134,7 +144,7 @@ the recorded baseline is missing or the code has moved.*
 
 ## Verification
 
-- **Run:** `python agent.py --input emails.csv --output results.csv`
+- **Run:** `python3 agent.py --input emails.csv --output results.csv`
   (add `--no-llm` for a deterministic, key-free run)
 - **Invariants that must hold:**
   - `category` ∈ {`billing`, `bug_report`, `feature_request`, `spam`, `other`}
@@ -145,7 +155,7 @@ the recorded baseline is missing or the code has moved.*
 - **Eval:** `python3 eval.py` — prints per-field accuracy, action accuracy on
   escalation rows, reply_draft invariant violations, and every mismatching row.
   Baseline (2026-10-12): 100% / 100% / 100% / 100%.
-- **Tests:** `python3 -m unittest discover -s . -p 'test_*.py'` (36 tests).
+- **Tests:** `python3 -m unittest discover -s . -p 'test_*.py'` (53 tests).
 - **Repo state:** `git status`
 
 ---

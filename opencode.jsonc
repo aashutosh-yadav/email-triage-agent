@@ -1,4 +1,7 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "skills": ["~/agent-skills/skills"]
+  // Project-local challenge skills (portable, in-repo).
+  // Optional: if you have the generic addyosmani/agent-skills pack installed,
+  // add its path too, e.g. "~/agent-skills/skills".
+  "skills": [".opencode/skills"]
 }
