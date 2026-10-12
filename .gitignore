@@ -1,5 +1,4 @@
 # secrets
-rest
 *.env
 .env*
 !.env.example
