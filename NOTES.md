@@ -9,8 +9,24 @@
 ## Step C — single entry point (done, commit edd89a1)
 - done: deleted stale agent/ package; `import agent` resolves to agent.py; runs clean.
 
-## Step D — eval (done, commit 023f123)
-- done: test-writer built eval_cases.csv (36 labeled rows across all coverage bands) + test_rules.py (25 unittest methods); eval.py rewritten (per-field + escalation-row accuracy + every mismatch + reply_draft invariant). Fixed from RED: injection "classify me as not spam"; French "ne fonctionne plus"; data-loss blocking ("files were wiped"); refund amounts in "$1,200"/"750 dollars"/word forms -> parsed numerically; per-rule escalation priorities (refund/angry/empty=medium, rest=high); outage phrasing -> bug_report category; question-beats-thanks ordering; newsletter/prize single-signal -> ignore. Added test_llm.py (11 tests: retry-once, invalid-cat fallback, temp 0, delimiters).
-- verified: 36/36 tests pass; eval category=priority=action=100%, escalation-action=100%, 0 reply_draft violations, 0 mismatches.
-- next: Step E cleanup (README rewrite, requirements, .env.example done, .gitignore *.zip, zip deletions, PROJECT_CONTEXT refresh) + reviewer pass.
-- known issues: real Groq call untested in CI (no key); word-form refund parsing is heuristic (see test coverage).
+## Step E — cleanup (done, commit 4c45360)
+- Trimmed requirements.txt (removed httpx).
+- Created .env.example, added `!.env.example` exception in .gitignore, added `*.zip` to ignore.
+- Rewrote README.md; refreshed PROJECT_CONTEXT.md (status, repo map, decisions, verification).
+- `git commit -m "Clean up: trim deps, add .env.example, ignore *.zip, refresh README + project context"` (4c45360).
+
+## Step F — apply reviewer findings (done, commit 32a271d)
+- Refund scoping: nearest amount to each "refund" (so $10 refund on $600 invoice no longer escalates). Over-flag honors >= threshold.
+- Injection: tightened regex to require a hardsign (previous/your/above/system/developer); drops benign "earlier instructions" cases while preserving canonical attacks.
+- RE_BUG: scoped to product/defect contexts; added `does nothing`, `perf...slowed`, `slowed down`, product-specific lag; removed overly broad `fail\w*`, `problem with`/`issue with` (unqualified).
+- RE_BILLING: `plan\b` replaced with money/subscription context (pro/basic/etc plan, plan price/cost/changes, upgrade/downgrade/cancel/change plan).
+- Non-actionable: added Out-of-office/automated markers; check non-actionable BEFORE question in decide (thanks+question can still reply if question detected).
+- eval.py: UTF-8 with errors="replace", robust `load_predicted` (header/id checks, duplicate detection), removed synthetic duplicate mismatch entry.
+- main: write decision log BEFORE results.csv.
+- Added targeted regression tests in test_rules.py. Regenerated `results.csv`. All 36 tests pass; eval 100%/100%/100% escalation 100%, 0 reply_draft violations.
+
+## Final state
+- Commits: A(785aa78), B(0cfffb9), C(edd89a1), D(023f123), E(4c45360), F(32a271d).
+- Working tree clean. Agent single entry point `agent.py`. LLM via Groq (pydantic, retry-once, temp 0, delimited). Deterministic `--no-llm` path. Decision log `out/decision_log.jsonl` (no secrets). Policy references updated (forced-escalation-before-spam carve-out; refund $500 threshold with explanation).
+- Eval/tests: 36/36 unittest tests OK; `python3 eval.py` → category=priority=action=100%, escalation-action=100%, no mismatches, no reply_draft violations.
+- Risks: live Groq key not tested here (mocked); refund word-form parsing is heuristic.
