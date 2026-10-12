@@ -346,3 +346,40 @@ class TestRuleLayer(unittest.TestCase):
     def test_out_of_office_not_replied_to(self):
         t = _decide("Re:", "Out of office until Thursday; is this urgent?")
         self.assertEqual((t.category, t.priority, t.action), ("other", "low", "ignore"))
+
+    # ---------------------------- regressions from review #3 (fresh-set misses)
+
+    def test_french_bug_report_escalates(self):
+        t = _decide("Probleme", "l'application plante au démarrage, impossible de l'utiliser")
+        self.assertEqual((t.category, t.priority, t.action), ("bug_report", "high", "escalate_to_human"))
+
+    def test_feature_request_would_be_great_to_add(self):
+        t = _decide("Idea", "It would be great to add dark mode")
+        self.assertEqual(t.category, "feature_request")
+
+    def test_mailing_list_request_is_not_feature(self):
+        t = _decide("Join", "Please add me to your mailing list")
+        self.assertNotEqual(t.category, "feature_request")
+
+    def test_planned_maintenance_is_not_an_outage(self):
+        t = _decide("Question", "Is the app down for maintenance tonight?")
+        self.assertNotEqual(t.action, "escalate_to_human")
+        self.assertNotEqual(t.priority, "high")
+
+    # ---------------------------- regressions from held-out set #1
+
+    def test_data_loss_phrasing_escalates(self):
+        t = _decide("Reports gone", "All of my saved reports disappeared after the sync finished. I lost months of work.")
+        self.assertEqual((t.category, t.priority, t.action), ("bug_report", "high", "escalate_to_human"))
+
+    def test_feature_request_lovely_if_you_could_add(self):
+        t = _decide("Idea", "It would be lovely if you could add a calendar view to the dashboard.")
+        self.assertEqual(t.category, "feature_request")
+
+    def test_feature_request_any_chance_you_could_add(self):
+        t = _decide("Idea", "Any chance you could add Slack notifications?")
+        self.assertEqual(t.category, "feature_request")
+
+    def test_feature_request_would_it_be_possible_to_add(self):
+        t = _decide("Idea", "Would it be possible to add CSV import to the app?")
+        self.assertEqual(t.category, "feature_request")

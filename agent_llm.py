@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass
-from typing import Literal, Optional, Tuple
+from typing import TYPE_CHECKING, Literal, Optional, Tuple
 
 from pydantic import BaseModel, ValidationError
 
@@ -12,24 +11,19 @@ try:
 except Exception:  # pragma: no cover
     requests = None
 
+if TYPE_CHECKING:  # agent.py owns the domain model; import for type hints only
+    from agent import Email
+
 ALLOWED_CATEGORIES = ("billing", "bug_report", "feature_request", "spam", "other")
 
 
-class GrogError(RuntimeError):
+class GroqError(RuntimeError):
     """Raised when the Groq LLM cannot produce a valid category proposal."""
 
 
 class CategoryProposal(BaseModel):
     category: Literal["billing", "bug_report", "feature_request", "spam", "other"]
     rationale: str = ""
-
-
-@dataclass
-class Email:
-    id: str
-    sender: str
-    subject: str
-    body: str
 
 
 class GroqClient:
@@ -48,10 +42,14 @@ class GroqClient:
         max_chars: int = 4000,
     ):
         self.api_key = api_key or os.getenv("GROQ_API_KEY") or os.getenv("groq_api_key")
-        self.model = model or os.getenv("GROQ_MODEL") or "llama-3.1-8b-instant"
+        self.model = model or os.getenv("GROQ_MODEL") or "openai/gpt-oss-20b"
         self.timeout = timeout
         self.max_chars = max_chars
         self.url = "https://api.groq.com/openai/v1/chat/completions"
+
+    def is_configured(self) -> bool:
+        """True when a live call is possible (key present and HTTP client available)."""
+        return bool(self.api_key) and requests is not None
 
     # -- prompt ---------------------------------------------------------
     def build_prompt(self, email: Email) -> str:
@@ -74,7 +72,7 @@ class GroqClient:
     # -- network --------------------------------------------------------
     def _chat(self, email: Email) -> str:
         if not self.api_key or requests is None:
-            raise GrogError("groq not configured; falling back")
+            raise GroqError("groq not configured; falling back")
         try:
             r = requests.post(
                 self.url,
@@ -95,7 +93,7 @@ class GroqClient:
             data = r.json()
             return data["choices"][0]["message"]["content"].strip()
         except Exception as exc:
-            raise GrogError(f"groq request failed: {exc}") from exc
+            raise GroqError(f"groq request failed: {exc}") from exc
 
     # -- parsing / validation ------------------------------------------
     @staticmethod
@@ -113,18 +111,18 @@ class GroqClient:
             payload = self._extract_json(content)
             return CategoryProposal.model_validate(payload)
         except (ValueError, TypeError, ValidationError) as exc:
-            raise GrogError(f"groq returned an invalid proposal: {exc}") from exc
+            raise GroqError(f"groq returned an invalid proposal: {exc}") from exc
 
     # -- public API -----------------------------------------------------
     def propose_category(self, email: Email) -> Tuple[str, str, str]:
-        """Returns (category, rationale, raw_content). Retries once, then raises GrogError."""
-        last_error: Optional[GrogError] = None
+        """Returns (category, rationale, raw_content). Retries once, then raises GroqError."""
+        last_error: Optional[GroqError] = None
         for attempt in range(2):  # one automatic retry
             try:
                 content = self._chat(email)
                 proposal = self._parse(content)
                 return proposal.category, proposal.rationale, content
-            except GrogError as exc:
+            except GroqError as exc:
                 last_error = exc
         assert last_error is not None
         raise last_error

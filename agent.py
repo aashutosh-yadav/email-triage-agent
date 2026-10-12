@@ -9,11 +9,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
+LLM_IMPORT_ERROR: Optional[str] = None
 try:
-    from agent_llm import GrogError, GroqClient
-except Exception:  # pragma: no cover — keep the batch runnable even if LLM dep breaks
-    GrogError = RuntimeError
+    from agent_llm import GroqError, GroqClient
+except Exception as exc:  # pragma: no cover — keep the batch runnable even if the LLM dep breaks
+    GroqError = RuntimeError  # type: ignore[assignment,misc]
     GroqClient = None  # type: ignore[assignment]
+    LLM_IMPORT_ERROR = f"{type(exc).__name__}: {exc}"
 
 CATEGORIES = {"billing", "bug_report", "feature_request", "spam", "other"}
 PRIORITIES = {"high", "medium", "low"}
@@ -84,6 +86,13 @@ RE_OUTAGE = re.compile(
     re.I,
 )
 RE_ANGRY = re.compile(r"\b(angry|furious|outraged|unacceptable)\b", re.I)
+
+# Planned maintenance ("down for maintenance") is not an unplanned outage.
+RE_MAINTENANCE = re.compile(
+    r"\bdown\s+for\s+(?:scheduled\s+|planned\s+|routine\s+)?(?:maintenance|upgrades?|an\s+upgrade)"
+    r"|\b(?:scheduled|planned|routine)\s+maintenance\b",
+    re.I,
+)
 
 # Refund-over-threshold detection: parse only the amount attached to "refund".
 RE_REFUND_CTX = re.compile(r"\brefund\w*\b", re.I)
@@ -181,15 +190,26 @@ RE_BUG = re.compile(
     r"|perf\w*\s+(?:has|have)?\s*slowed|slowed\s+down|slow(?:ly)?\s+to\s+(?:load|respond|open)"
     r"|(?:app|application|loading|sync|export|video|network|streaming)\s+lag(?:ging)?|lag(?:ging)?\s+in\s+(?:loading|sync|export)"
     r"|ne\s+fonctionne\s+(?:pas|plus)|fonctionne\s+(?:pas|plus)|ca\s+marche\s+pas"
+    r"|(?:application|appli|logiciel|site|page|service|programme|syst[eè]me)\s+plante(?:nt)?"
+    r"|plante(?:nt)?\s+au\s+d[ée]marrage"
+    r"|impossible\s+(?:de\s+l['\u2019]|d['\u2019]|de\s+)?utiliser"
     r"|(?:app|site|website|platform|service)\s+(?:is|are|was)\s+down|down\s+for\s+everyone"
     r"|(?:50[0348])\s+error|internal\s+server\s+error|outage|won['\u2019]t\s+load"
     r"|data\s+loss|(?:data|files?|records?)\s+(?:was|were)\s+(?:lost|wiped)"
-    r"|lost\s+(?:all\s+)?my\s+(?:data|files?))\b",
+    r"|(?:data|files?|records?|reports?|projects?|documents?|photos?|notes?)\s+(?:disappeared|vanished|went\s+missing|are\s+gone)"
+    r"|lost\s+(?:all\s+)?(?:my\s+)?(?:data|files?|reports?|projects?|documents?)"
+    r"|lost\s+(?:\w+\s+){1,3}work\b)\b",
     re.I,
 )
 RE_FEAT = re.compile(
-    r"\b(feature|integration|suggestion|enhancement|roadmap|please\s+add|could\s+you\s+add|can\s+you\s+add"
-    r"|can\s+we\s+(?:have|get)|would\s+be\s+(?:great|nice)\s+to\s+have|would\s+love)\b",
+    r"\b(feature|integration|suggestion|enhancement|roadmap"
+    r"|please\s+add(?!\s+me\b)|could\s+you\s+add|can\s+you\s+add"
+    r"|(?:any\s+)?chance\s+(?:you\s+)?(?:could|can|might)\s+add"
+    r"|if\s+you\s+could\s+(?:add|support|include|build)|you\s+could\s+add"
+    r"|would\s+it\s+be\s+possible\s+to\s+(?:add|support|include|build)"
+    r"|can\s+we\s+(?:have|get)"
+    r"|would\s+be\s+(?:great|nice|awesome|helpful|useful|lovely|wonderful|fantastic)"
+    r"|would\s+love\s+(?:to\s+)?(?:have|see|get|add))\b",
     re.I,
 )
 RE_THANKS = re.compile(r"\b(thanks|thank\s+you|thx|appreciate\s+it|great\s+job|well\s+done|gracias|merci|danke)\b", re.I)
@@ -212,6 +232,11 @@ RE_BLOCKING_BUG = re.compile(
     r"\b(crash\w*|won['\u2019]t\s+(open|start|load|launch|work|cancel)|cannot\s+log\s+in|can['\u2019]t\s+log\s+in"
     r"|black\s+screen|ecran\s+noir|frozen|freez\w*|completely\s+(broken|blocked|unusable)|data\s+loss|locked\s+out"
     r"|unable\s+to\s+(open|access|use)|impossible\s+to\s+(use|open)|lost\s+my\s+data|rien\s+faire|no\s+puedo"
+    r"|(?:application|appli|logiciel|site|page|service|programme|syst[eè]me)\s+plante(?:nt)?"
+    r"|plante(?:nt)?\s+au\s+d[ée]marrage"
+    r"|impossible\s+(?:de\s+l['\u2019]|d['\u2019]|de\s+)?utiliser"
+    r"|(?:data|files?|records?|reports?|projects?|documents?|photos?|notes?)\s+(?:disappeared|vanished|went\s+missing|are\s+gone)"
+    r"|lost\s+(?:\w+\s+){1,3}work\b"
     r"|(?:data|files?|records?|projects?)\s+(?:was|were|is|are)\s+(?:lost|wiped))",
     re.I,
 )
@@ -329,7 +354,7 @@ def should_force_escalate_detail(subject: str, body: str) -> Tuple[bool, str, st
         return True, "sensitive data (ssn) mentioned; escalates to human", "high"
     if RE_PAYBLOCK.search(t):
         return True, "payment blocked/cannot pay; high priority per policy", "high"
-    if RE_OUTAGE.search(t):
+    if RE_OUTAGE.search(t) and not RE_MAINTENANCE.search(t):
         return True, "outage: app/site/service is down; high priority per policy", "high"
     if RE_ANGRY.search(t):
         return True, "angry customer; escalates to human per policy", "medium"
@@ -493,21 +518,27 @@ def classify_email(
     email: Email,
     use_llm: bool = False,
     client: Optional[GroqClient] = None,
-) -> Tuple[str, str, str, Optional[str]]:
+) -> Tuple[str, str, str, Optional[str], str]:
     """Classify one email.
 
-    Returns (category, source, rationale, raw_llm_content) where source is
+    Returns (category, source, rationale, raw_llm_content, note) where source is
     'llm' when the Groq model produced a valid category, else 'fallback' (regex).
     The batch never crashes: any LLM failure falls back to the regex classifier.
+
+    A model-proposed "spam" is only trusted when the deterministic detector
+    agrees (note='llm_spam_rejected' otherwise), so an over-eager model cannot
+    silently drop a real customer email.
     """
     if use_llm and client is not None:
         try:
             cat, rationale, raw = client.propose_category(email)
             if cat in CATEGORIES:
-                return cat, "llm", rationale, (raw or "")[:500]
+                if cat == "spam" and not is_spam(f"{email.subject} {email.body}"):
+                    return classify_regex(email), "fallback", rationale, (raw or "")[:500], "llm_spam_rejected"
+                return cat, "llm", rationale, (raw or "")[:500], ""
         except Exception:
             pass  # retry is handled inside the client; any residual failure -> fallback
-    return classify_regex(email), "fallback", "", None
+    return classify_regex(email), "fallback", "", None, ""
 
 
 def triage_email(
@@ -516,13 +547,16 @@ def triage_email(
     client: Optional[GroqClient] = None,
 ) -> Tuple[Triage, Dict]:
     """Triage one email; never raises for row-level issues."""
-    cat, source, rationale, raw = classify_email(email, use_llm=use_llm, client=client)
+    cat, source, rationale, raw, note = classify_email(email, use_llm=use_llm, client=client)
     try:
         t = decide(email, cat)
         validate_triage(t)
-        return t, {"id": email.id, "source": source, "category": t.category,
-                   "priority": t.priority, "action": t.action, "reason": t.reason,
-                   "rationale": rationale, "raw_llm": raw}
+        info = {"id": email.id, "source": source, "category": t.category,
+                "priority": t.priority, "action": t.action, "reason": t.reason,
+                "rationale": rationale, "raw_llm": raw}
+        if note:
+            info["llm_note"] = note
+        return t, info
     except Exception as exc:
         t = Triage(
             id=email.id,
@@ -547,14 +581,28 @@ def main() -> None:
                         help="deterministic run: use the regex classifier only")
     args = parser.parse_args()
 
-    use_llm = (not args.no_llm) and GroqClient is not None
+    use_llm = not args.no_llm
     client: Optional[GroqClient] = None
     if use_llm:
-        try:
-            client = GroqClient()
-        except Exception as exc:
-            print(f"warning: could not init LLM client ({exc}); using regex only", file=sys.stderr)
-            client = None
+        if GroqClient is None:
+            print(
+                f"warning: LLM unavailable ({LLM_IMPORT_ERROR or 'agent_llm could not be imported'}); "
+                "running regex-only. Install requirements and set GROQ_API_KEY to enable the model.",
+                file=sys.stderr,
+            )
+        else:
+            try:
+                client = GroqClient()
+            except Exception as exc:
+                print(f"warning: could not init LLM client ({exc}); running regex-only", file=sys.stderr)
+                client = None
+            if client is not None and not client.is_configured():
+                print(
+                    "warning: GROQ_API_KEY is not set (or 'requests' is missing); running regex-only. "
+                    "Set GROQ_API_KEY, or pass --no-llm to silence this.",
+                    file=sys.stderr,
+                )
+                client = None
 
     try:
         emails = read_emails(args.input)
@@ -569,7 +617,11 @@ def main() -> None:
         # leave a valid-looking output file behind.
         write_results(args.output, out)
         counts = {s: sum(1 for r in log_rows if r.get("source") == s) for s in ("llm", "fallback")}
-        print(f"Wrote {len(out)} rows to {args.output} (llm={counts['llm']}, fallback={counts['fallback']})", file=sys.stderr)
+        mode = "llm" if client is not None else "regex-only"
+        print(
+            f"Wrote {len(out)} rows to {args.output} ({mode}; llm={counts['llm']}, fallback={counts['fallback']})",
+            file=sys.stderr,
+        )
     except Exception as exc:
         print(f"error: {exc}", file=sys.stderr)
         sys.exit(1)
